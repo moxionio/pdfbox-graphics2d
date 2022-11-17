@@ -15,6 +15,7 @@
  */
 package de.rototor.pdfbox.graphics2d;
 
+import de.rototor.pdfbox.graphics2d.IPdfBoxGraphics2DColorMapper.IColorMapperEnv;
 import de.rototor.pdfbox.graphics2d.IPdfBoxGraphics2DDrawControl.IDrawControlEnv;
 import de.rototor.pdfbox.graphics2d.IPdfBoxGraphics2DFontTextDrawer.IFontTextDrawerEnv;
 import de.rototor.pdfbox.graphics2d.IPdfBoxGraphics2DPaintApplier.IPaintEnv;
@@ -48,6 +49,7 @@ import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
 import java.awt.geom.NoninvertibleTransformException;
 import java.awt.geom.Path2D;
+import java.awt.geom.Point2D;
 import java.awt.geom.PathIterator;
 import java.awt.geom.Rectangle2D;
 import java.awt.geom.RoundRectangle2D;
@@ -90,7 +92,7 @@ public class PdfBoxGraphics2D extends Graphics2D
     private Shape clipShape;
     private Color backgroundColor;
     private final CopyInfo copyInfo;
-    private final PDRectangle bbox;
+    final PDRectangle bbox;
 
     /**
      * Set a new color mapper.
@@ -106,7 +108,7 @@ public class PdfBoxGraphics2D extends Graphics2D
     /**
      * Set a new image encoder
      *
-     * @param imageEncoder the image encoder, which encodes a image as PDImageXForm.
+     * @param imageEncoder the image encoder, which encodes an image as PDImageXForm.
      */
     @SuppressWarnings({ "unused" })
     public void setImageEncoder(IPdfBoxGraphics2DImageEncoder imageEncoder)
@@ -119,7 +121,7 @@ public class PdfBoxGraphics2D extends Graphics2D
      * from the {@link IPdfBoxGraphics2DPaintApplier} and just extend the paint
      * mapping for custom paint.
      * <p>
-     * If the paint you map is a paint from a standard library and you can implement
+     * If the paint you map is a paint from a standard library, and you can implement
      * the mapping using reflection please feel free to send a pull request to
      * extend the default paint mapper.
      *
@@ -256,6 +258,7 @@ public class PdfBoxGraphics2D extends Graphics2D
             this.fontTextDrawer = parentGfx.fontTextDrawer;
             this.imageEncoder = parentGfx.imageEncoder;
             this.paintApplier = parentGfx.paintApplier;
+            this.drawControl = parentGfx.drawControl;
         }
 
         baseTransform = new AffineTransform();
@@ -270,7 +273,24 @@ public class PdfBoxGraphics2D extends Graphics2D
     }
 
     /**
-     * @return the PDAppearanceStream which resulted in this graphics
+     * Sometimes you need to access the PDResources and add special resources to it
+     * for some stuff (e.g. patterns of embedded PDFs or simmilar). For that you
+     * need the PDResources associated with the XForm.
+     * <p>
+     * It's identlical with getXFormObject().getResources(), with the difference
+     * beeing that you can access it while the Graphics2D is not yet disposed.
+     *
+     * @return the PDResources of the resulting XForm
+     */
+    public PDResources getResources()
+    {
+        return xFormObject.getResources();
+    }
+
+    /**
+     * *AFTER* you have disposed() this Graphics2D you can access the XForm
+     *
+     * @return the PDFormXObject which resulted in this graphics
      */
     @SuppressWarnings("WeakerAccess")
     public PDFormXObject getXFormObject()
@@ -481,7 +501,7 @@ public class PdfBoxGraphics2D extends Graphics2D
     }
 
     /**
-     * Interal debugflag to see if a unkown stroke is mapped
+     * Interal debugflag to see if an unkown stroke is mapped
      */
     private final static boolean ENABLE_DEBUG_UNKOWN_STROKE = false;
 
@@ -512,16 +532,18 @@ public class PdfBoxGraphics2D extends Graphics2D
             }
 
             AffineTransform tf = getCurrentEffectiveTransform();
+            float lineWidth = calculateTransformedLength(basicStroke.getLineWidth(), tf);
 
-            double scaleX = tf.getScaleX();
-            contentStream.setLineWidth((float) Math.abs(basicStroke.getLineWidth() * scaleX));
+            contentStream.setLineWidth(lineWidth);
+
             float[] dashArray = basicStroke.getDashArray();
             if (dashArray != null)
             {
                 for (int i = 0; i < dashArray.length; i++)
-                    dashArray[i] = (float) Math.abs(dashArray[i] * scaleX);
+                    dashArray[i] = calculateTransformedLength(dashArray[i], tf);
+
                 contentStream.setLineDashPattern(dashArray,
-                        (float) Math.abs(basicStroke.getDashPhase() * scaleX));
+                        calculateTransformedLength(basicStroke.getDashPhase(), tf));
             }
         }
         else if (strokeToApply != null)
@@ -529,6 +551,16 @@ public class PdfBoxGraphics2D extends Graphics2D
             if (ENABLE_DEBUG_UNKOWN_STROKE)
                 System.out.println("PDFBoxGraphics2D: Can't handle Stroke " + strokeToApply);
         }
+    }
+
+    private float calculateTransformedLength(float length, AffineTransform tf)
+    {
+        // Represent stroke width as a horizontal line from origin to basicStroke.LineWidth.
+        Point2D.Float lengthVector = new Point2D.Float(length, 0);
+        // Apply the current transform to the horizontal line.
+        tf.deltaTransform(lengthVector, lengthVector);
+        // Calculate the length of the transformed line. This is the new, adjusted length.
+        return (float) Math.sqrt(lengthVector.x * lengthVector.x + lengthVector.y * lengthVector.y);
     }
 
     private AffineTransform getCurrentEffectiveTransform()
@@ -604,7 +636,7 @@ public class PdfBoxGraphics2D extends Graphics2D
         {
             if (bgcolor != null)
             {
-                contentStream.setNonStrokingColor(colorMapper.mapColor(contentStream, bgcolor));
+                contentStream.setNonStrokingColor(colorMapper.mapColor(bgcolor, colorMapperEnv));
                 walkShape(new Rectangle(x, y, width, height));
                 contentStream.fill();
             }
@@ -620,7 +652,7 @@ public class PdfBoxGraphics2D extends Graphics2D
     public boolean drawImage(Image img, int dx1, int dy1, int dx2, int dy2, int sx1, int sy1,
             int sx2, int sy2, ImageObserver observer)
     {
-        return drawImage(img, dx1, dy1, dx2, dy2, sx1, sy2, sx2, sy2, null, observer);
+        return drawImage(img, dx1, dy1, dx2, dy2, sx1, sy1, sx2, sy2, null, observer);
     }
 
     public boolean drawImage(Image img, AffineTransform xform, ImageObserver obs)
@@ -683,7 +715,7 @@ public class PdfBoxGraphics2D extends Graphics2D
              */
             if (bgcolor != null)
             {
-                contentStream.setNonStrokingColor(colorMapper.mapColor(contentStream, bgcolor));
+                contentStream.setNonStrokingColor(colorMapper.mapColor(bgcolor, colorMapperEnv));
                 walkShape(new Rectangle(dx1, dy1, width, height));
                 contentStream.fill();
             }
@@ -991,6 +1023,20 @@ public class PdfBoxGraphics2D extends Graphics2D
     }
 
     private final PaintEnvImpl paintEnv = new PaintEnvImpl();
+    final IColorMapperEnv colorMapperEnv = new IColorMapperEnv()
+    {
+        @Override
+        public PDPageContentStream getContentStream()
+        {
+            return contentStream;
+        }
+
+        @Override
+        public PDResources getResources()
+        {
+            return PdfBoxGraphics2D.this.getResources();
+        }
+    };
 
     private static class PaintApplyResult
     {
@@ -1326,7 +1372,7 @@ public class PdfBoxGraphics2D extends Graphics2D
      * closed?
      * <p>
      * We need this flag to avoid to clip twice if both the plaint applyer needs to
-     * clip and we have some clipping. If at the end we try to clip with an empty
+     * clip, and we have some clipping. If at the end we try to clip with an empty
      * path, then Acrobat Reader does not like that and draws nothing.
      */
     private boolean hasPathOnStream = false;
@@ -1435,6 +1481,7 @@ public class PdfBoxGraphics2D extends Graphics2D
         throw new RuntimeException(e);
     }
 
+    @Override
     public void copyArea(int x, int y, int width, int height, int dx, int dy)
     {
         /*
@@ -1443,14 +1490,22 @@ public class PdfBoxGraphics2D extends Graphics2D
         throw new IllegalStateException("copyArea() not possible!");
     }
 
+    @Override
     public void drawLine(int x1, int y1, int x2, int y2)
     {
         draw(new Line2D.Double(x1, y1, x2, y2));
     }
 
+    @Override
     public void fillRect(int x, int y, int width, int height)
     {
         fill(new Rectangle(x, y, width, height));
+    }
+
+    @Override
+    public void drawRect(int x, int y, int width, int height)
+    {
+        draw(new Rectangle(x, y, width, height));
     }
 
     public void clearRect(int x, int y, int width, int height)
